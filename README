@@ -1,0 +1,9 @@
+Raspberry Pi video decode demo.
+
+This uses the OpenMAX library to decode video from inside Python with hardware acceleration.
+
+The Raspberry Pi does not ship with audio decode VLLs so this only decodes the video stream.
+
+USAGE
+import pyvideo
+pyvideo.play("/home/pi/transformers.mp4")
