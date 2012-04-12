@@ -5,10 +5,15 @@
 # modification, are permitted.
 #
 # Raspberry Pi Video decode demo using OpenMAX IL via Python
+#
 # Version 0.1 Now playback is at real time
+# Version 0.2 Added abiility to pause/resume/seek
 
 import ctypes
 import time
+
+# Define verbose=True to get debug messages
+verbose = False
 
 # Set up constants from OMX_Core.h include files
 
@@ -406,12 +411,14 @@ class OMX_TIME_CONFIG_ACTIVEREFCLOCKTYPE (ctypes.Structure):
      
     
 def py_empty_buffer_done_callback(handle,appdata,data):
-    print "Got empty buffer done callback!",handle
+    if verbose:
+        print "Got empty buffer done callback!",handle
     return 0
 
     
 def py_fill_buffer_done_callback(handle,appdata,data):
-    print "Got empty buffer done callback!",handle
+    if verbose:
+        print "Got empty buffer done callback!",handle
     return 0
     
 
@@ -421,7 +428,8 @@ fill_buffer_done_callback = c_fill_buffer_done(py_fill_buffer_done_callback)
 def check(e):
     """Checks that error is zero"""
     if e==0: return
-    print 'Error code',hex(e&0xffffffff)
+    if verbose:
+        print 'Error code',hex(e&0xffffffff)
     raise ValueError
     
 class OMXComponent(object):
@@ -436,18 +444,23 @@ class OMXComponent(object):
         callbacks = CALLBACKS()
         def py_event_handler_callback(handle,appdata,event,data1,data2,pdata):
             if event == OMX_EventError:
-                print 'Error:',hex(data1&0xffffffff),name
+                if verbose:
+                    print 'Error:',hex(data1&0xffffffff),name
             elif event == OMX_EventCmdComplete:
-                print 'Command complete',name
+                if verbose:
+                    print 'Command complete',name
                 self.command_complete = True
             elif event == OMX_EventPortSettingsChanged:
-                print 'Port Settings Changed',name
+                if verbose:
+                    print 'Port Settings Changed',name
                 self.port_changed = True
             elif event == OMX_EventBufferFlag:
-                print 'End of stream detected',name
+                if verbose:
+                    print 'End of stream detected',name
                 self.end_of_stream = True
             else:
-                print "Got callback for",name,event,hex(data1&0xffffffff),data2
+                if verbose:
+                    print "Got callback for",name,event,hex(data1&0xffffffff),data2
             
             return 0 
         event_handler_callback = c_event_handler(py_event_handler_callback)
@@ -532,7 +545,7 @@ class OMXComponent(object):
                 self.output_zero_port(ports.nStartPortNumber + x)
                 
     def debug(self):
-        """Runs through the different types of port and sets number of ouyput buffers to 0"""
+        """Describes the ports on a component"""
         for t in (OMX_IndexParamAudioInit, OMX_IndexParamVideoInit, OMX_IndexParamImageInit, OMX_IndexParamOtherInit):
             ports = self.get_ports(t)
             for x in xrange(ports.nPorts):
@@ -556,40 +569,44 @@ class OMXComponent(object):
         check(e)
         return self
         
-    def stateset(self,state):
+    def change_state(self,state):
         """Moves the component to the requested state"""
-        if self.getstate()==state:
-            print 'skip stateset'
+        if self.get_state()==state:
+            if verbose:
+                print 'skip change_state'
             return self
-        print 'Moving to state',state
+        if verbose:
+            print 'Moving to state',state
         e = self.handle[0].SendCommand(self.handle, OMX_CommandStateSet, state, 0)
         check(e)
         count=0
         for count in xrange(10):
-            s = self.getstate()
+            s = self.get_state()
             if s==state:
                 break
-            print 'Waiting...'
+            if verbose:
+                print 'Waiting...'
             time.sleep(0.2)
         else:
             raise ValueError("State not reached")
             
         return self
         
-    def getstate(self):
+    def get_state(self):
         """Retrieves the current state"""
         state = ctypes.c_int(0xaffedead)
         e = self.handle[0].GetState(self.handle, ctypes.byref(state))
         check(e)
-        print 'Getting state',state.value
+        if verbose:
+            print 'Getting state',state.value
         return state.value
 
     def check_idle(self):
         """Make sure that source component is idle, not loaded"""
-        s = self.getstate()
+        s = self.get_state()
         if s != OMX_StateLoaded:
             return
-        self.stateset(OMX_StateIdle)
+        self.change_state(OMX_StateIdle)
 
     def tunnel(self,srcport,sink,sinkport):
         """Sets up a tunnel from srcport on this component to dest:destport"""
@@ -639,12 +656,37 @@ class ReadMediaComponent(OMXComponent):
         e = self.handle[0].SetParameter(self.handle, OMX_IndexParamContentURI, ctypes.cast(uri_p,ctypes.c_void_p))
         check(e)
 
+    def set_position(self, ticks):
+        """Sets the position in microseconds from the start of the file"""
+        cs = OMX_TIME_CONFIG_TIMESTAMPTYPE()
+        cs.nSize = 5*4
+        cs.nVersion = OMX_VERSION
+        cs.nPortIndex = OMX_ALL
+        cs.nTimestamp0 = ticks & 0xffffffff
+        cs.nTimestamp1 = (ticks>>32) & 0xffffffff
+        cs_p = ctypes.cast(ctypes.pointer(cs),ctypes.c_void_p)
+        e = self.handle[0].SetConfig(self.handle, OMX_IndexConfigTimePosition, cs_p)
+        check(e)
+
+    def get_position(self):
+        """Gets the position in microseconds from the start of the file"""
+        cs = OMX_TIME_CONFIG_TIMESTAMPTYPE()
+        cs.nSize = 5*4
+        cs.nVersion = OMX_VERSION
+        cs.nPortIndex = OMX_ALL
+        cs_p = ctypes.cast(ctypes.pointer(cs),ctypes.c_void_p)
+        e = self.handle[0].GetConfig(self.handle, OMX_IndexConfigTimePosition, cs_p)
+        check(e)
+        return (cs.nTimestamp1 << 32) + cs.nTimestamp0
+
+
 class VideoSchedulerComponent(OMXComponent):
     """This component generates clock signals to other components"""
     
     def __init__(self):
         super(VideoSchedulerComponent,self).__init__("video_scheduler")
         self.end_of_stream = False
+
 
 class ClockComponent(OMXComponent):
     """This component generates clock signals to other components"""
@@ -658,7 +700,6 @@ class ClockComponent(OMXComponent):
         cs.nSize = 8*4
         cs.nVersion = OMX_VERSION
         cs.eState = OMX_TIME_ClockStateWaitingForStartTime
-        #cs.eState = OMX_TIME_ClockStateRunning
         cs.nWaitMask = 1
         #cs.nWaitMask = 0
         #cs.nOffset0=-1000*200
@@ -666,6 +707,29 @@ class ClockComponent(OMXComponent):
         e = self.handle[0].SetParameter(self.handle, OMX_IndexConfigTimeClockState, ctypes.cast(cs_p,ctypes.c_void_p))
         check(e)
 
+    def clock_stop(self):
+        """Tells a clock component to stop"""
+        cs = OMX_TIME_CONFIG_CLOCKSTATETYPE()
+        cs.nSize = 8*4
+        cs.nVersion = OMX_VERSION
+        cs.eState = OMX_TIME_ClockStateStopped
+        cs_p = ctypes.pointer(cs)
+        e = self.handle[0].SetParameter(self.handle, OMX_IndexConfigTimeClockState, ctypes.cast(cs_p,ctypes.c_void_p))
+        check(e)
+
+    def clock_run(self):
+        """Tells a clock component to wait for the bitmask of ports to start"""
+        cs = OMX_TIME_CONFIG_CLOCKSTATETYPE()
+        cs.nSize = 8*4
+        cs.nVersion = OMX_VERSION
+        cs.eState = OMX_TIME_ClockStateRunning
+        ticks = self.clock_time()
+        cs.nStartTime0 = ticks&0xffffffff
+        cs.nStartTime1 = (ticks>>32)&0xffffffff
+        cs_p = ctypes.pointer(cs)
+        e = self.handle[0].SetParameter(self.handle, OMX_IndexConfigTimeClockState, ctypes.cast(cs_p,ctypes.c_void_p))
+        check(e)
+        
     def clock_report(self):
         """Prints the current state of the clock"""
         cs = OMX_TIME_CONFIG_CLOCKSTATETYPE()
@@ -686,9 +750,9 @@ class ClockComponent(OMXComponent):
         cs_p = ctypes.pointer(cs)
         e = self.handle[0].GetConfig(self.handle, OMX_IndexConfigTimeCurrentMediaTime, ctypes.cast(cs_p,ctypes.c_void_p))
         check(e)
-        print 'Clock time=%d:%d us' % (cs.nTimestamp0,cs.nTimestamp1)
         assert cs.nSize == 5*4
-
+        return cs.nTimestamp0 + (cs.nTimestamp1<<32)
+        
     def clock_walltime(self):
         """Prints the current time on the clock"""
         cs = OMX_TIME_CONFIG_TIMESTAMPTYPE()
@@ -782,83 +846,156 @@ e = openmax.OMX_Init()
 check(e)
 
 # openmax.OMX_Deinit()
+
+class VideoPlayer:
+    """This class allows you to control the playing of a video file"""
+    def __init__(self,videofile):
+        # Open the required components
+        read_media = ReadMediaComponent()
+        read_media.output_zero_port(PORT_MEDIA_READER_OUTPUT)
+
+        # Open file
+        read_media.disable_port(PORT_MEDIA_READER_CLOCK_INPUT)
+            
+        read_media.open_uri(videofile)
+
+        read_media.change_state(OMX_StateIdle)
+        while not read_media.port_changed:
+            time.sleep(0.1)
+
+        # Open components needed for playback
+        video_decode = OMXComponent("video_decode",disable_all=False)
+        video_render = OMXComponent("video_render")
+        clock = ClockComponent()
+        video_scheduler = VideoSchedulerComponent()
+
+        # Connect up just read_media and video_decode to fill the pipeline with frames
+        tunnels = []
+        tunnels.append(read_media.tunnel(PORT_MEDIA_READER_OUTPUT,video_decode,PORT_VIDEO_DECODER_INPUT))
+        video_decode.disable_port(131)
+
+        # Start the video decode
+        video_decode.change_state(OMX_StateIdle)
+        video_decode.change_state(OMX_StateExecuting)
+        read_media.change_state(OMX_StateIdle)
+        read_media.change_state(OMX_StateExecuting)
+
+        # Wait for video to fill with frames
+        while not video_decode.port_changed:
+            time.sleep(0.1)
+
+        # Pause the media so we can set up more tunnels
+        read_media.change_state(OMX_StateIdle)
+            
+        #Set up the rest of the render pipeline
+        clock.clock_wait(1) # Wait only for video to be ready
+        clock.clock_setactiveref()
+        tunnels.append(video_decode.tunnel(PORT_VIDEO_DECODER_OUTPUT,video_scheduler,PORT_VIDEO_SCHEDULER_INPUT))
+        tunnels.append(video_scheduler.tunnel(PORT_VIDEO_SCHEDULER_OUTPUT,video_render,PORT_VIDEO_RENDER_INPUT))
+        tunnels.append(clock.tunnel(80,video_scheduler,PORT_VIDEO_SCHEDULER_CLOCK_INPUT))
+        tunnels.append(clock.tunnel(81,read_media,PORT_MEDIA_READER_CLOCK_INPUT))
+        video_render.change_state(OMX_StateIdle)
+        self.tunnels = tunnels
+        
+        # Start complete pipeline
+        clock.change_state(OMX_StateExecuting)
+        read_media.change_state(OMX_StateExecuting)
+        video_scheduler.change_state(OMX_StateExecuting)
+        video_render.change_state(OMX_StateExecuting)
+        self.read_media = read_media
+        self.clock = clock
+        self.video_scheduler = video_scheduler
+        self.C=[read_media,video_decode,video_scheduler,video_render,clock]
+        
+    def finished(self):
+        """Returns True if the video has finished playing"""
+        return self.video_scheduler.end_of_stream
+        
+    def wait(self):
+        """Waits until the video has finished playing"""
+        while not self.finished():
+            time.sleep(0.1)
+
+    def pause(self):
+        """Pauses the video stream"""
+        self.read_media.change_state(OMX_StatePause)
+        self.clock.clock_stop()
+        self.seeked = False # Marker to say whether we have done a seek since the pause.
+            
+    def tell(self):
+        """Return the current media time in seconds"""
+        return float(self.read_media.get_position())/10**6
     
+    def seek(self,time_offset):
+        """Seek to the time (given in seconds from start of video) and resume playing.
+
+        The time_offset can be given as an integer or a floating point number."""
+        time_offset_us = int(time_offset*10**6)
+        self.pause()
+        if verbose:
+            print 'Flushing video and read_media'
+        for t in self.tunnels[:2]:  # Flush video and read_media components
+            t.flush()
+        if verbose:
+            print 'Set position'
+        self.read_media.set_position(time_offset_us)
+        self.seeked = True
+        if verbose:
+            print 'Flushing all tunnels'
+        for t in self.tunnels:  # Flush all components
+            t.flush()
+        # Clear any EOS state
+        self.video_scheduler.end_of_stream = False
+        self.resume()
+        
+    def resume(self):
+        """Starts playing after a pause"""
+        
+        if verbose:
+            print 'Resuming'
+        if self.seeked:
+            self.clock.clock_wait(1)
+        else:
+            self.clock.clock_run()
+        self.read_media.change_state(OMX_StateExecuting)
+        
+    def close(self):
+        """Closes down all the openmax components used to play the stream"""
+        tunnels = self.tunnels
+        for t in tunnels:
+            t.flush()
+        for t in tunnels:
+            t.disable()
+        for t in tunnels:
+            t.teardown()
+        C= self.C
+        for c in C:
+            c.change_state(OMX_StateIdle)
+        for c in C:
+            c.change_state(OMX_StateLoaded)
+        for c in C:
+            c.close()
+            
+        
 def play(videofile):
     """Plays the video stream for the given filename"""
+    vp = VideoPlayer(videofile)
+    vp.wait()
+    vp.close()
 
-    # Open the required components
-    read_media = ReadMediaComponent()
-    read_media.output_zero_port(PORT_MEDIA_READER_OUTPUT)
-
-    # Open file
-    read_media.disable_port(PORT_MEDIA_READER_CLOCK_INPUT)
-        
-    read_media.open_uri(videofile)
-
-    read_media.stateset(OMX_StateIdle)
-    while not read_media.port_changed:
-        time.sleep(0.1)
-
-    # Open components needed for playback
-    video_decode = OMXComponent("video_decode",disable_all=False)
-    video_render = OMXComponent("video_render")
-    clock = ClockComponent()
-    video_scheduler = VideoSchedulerComponent()
-
-    # Connect up just read_media and video_decode to fill the pipeline with frames
-    tunnels = []
-    tunnels.append(read_media.tunnel(PORT_MEDIA_READER_OUTPUT,video_decode,PORT_VIDEO_DECODER_INPUT))
-    video_decode.disable_port(131)
-
-    # Start the video decode
-    video_decode.stateset(OMX_StateIdle)
-    video_decode.stateset(OMX_StateExecuting)
-    read_media.stateset(OMX_StateIdle)
-    read_media.stateset(OMX_StateExecuting)
-
-    # Wait for video to fill with frames
-    while not video_decode.port_changed:
-        time.sleep(0.1)
-
-    # Pause the media so we can set up more tunnels
-    read_media.stateset(OMX_StateIdle)
-        
-    #Set up the rest of the render pipeline
-    clock.clock_wait(1) # Wait only for video to be ready
-    clock.clock_setactiveref()
-    tunnels.append(video_decode.tunnel(PORT_VIDEO_DECODER_OUTPUT,video_scheduler,PORT_VIDEO_SCHEDULER_INPUT))
-    tunnels.append(video_scheduler.tunnel(PORT_VIDEO_SCHEDULER_OUTPUT,video_render,PORT_VIDEO_RENDER_INPUT))
-    tunnels.append(clock.tunnel(80,video_scheduler,PORT_VIDEO_SCHEDULER_CLOCK_INPUT))
-    tunnels.append(clock.tunnel(81,read_media,PORT_MEDIA_READER_CLOCK_INPUT))
-    video_render.stateset(OMX_StateIdle)
-
-    # Start complete pipeline
-    clock.stateset(OMX_StateExecuting)
-    read_media.stateset(OMX_StateExecuting)
-    video_scheduler.stateset(OMX_StateExecuting)
-    video_render.stateset(OMX_StateExecuting)
-
-    while not video_scheduler.end_of_stream:
-        time.sleep(0.1)
-
-    for t in tunnels:
-        t.flush()
-    for t in tunnels:
-        t.disable()
-    for t in tunnels:
-        t.teardown()
-    C=[read_media,video_decode,video_scheduler,video_render,clock]
-    for c in C:
-        c.stateset(OMX_StateIdle)
-    for c in C:
-        c.stateset(OMX_StateLoaded)
-    for c in C:
-        c.close()
-        
-    print 'Stream finished'
-    return
-
+def testplay(videofile):
+    """Tries a variety of operations on the video"""
+    vp = VideoPlayer(videofile)
+    time.sleep(2)
+    vp.pause()
+    time.sleep(2)
+    vp.resume()
+    time.sleep(2)
+    print vp.tell()
+    vp.seek(10)
+    vp.wait()
+    vp.close()
 
 if __name__ == "__main__":
-    play("/home/pi/transformers.mp4")
+    testplay("/home/pi/transformers.mp4")
     #play("/opt/vc/src/hello_pi/hello_video/test.h264") 
