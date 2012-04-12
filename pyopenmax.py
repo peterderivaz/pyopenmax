@@ -5,6 +5,7 @@
 # modification, are permitted.
 #
 # Raspberry Pi Video decode demo using OpenMAX IL via Python
+# Version 0.1 Now playback is at real time
 
 import ctypes
 import time
@@ -660,7 +661,7 @@ class ClockComponent(OMXComponent):
         #cs.eState = OMX_TIME_ClockStateRunning
         cs.nWaitMask = 1
         #cs.nWaitMask = 0
-        cs.nOffset0=-1000*200
+        #cs.nOffset0=-1000*200
         cs_p = ctypes.pointer(cs)
         e = self.handle[0].SetParameter(self.handle, OMX_IndexConfigTimeClockState, ctypes.cast(cs_p,ctypes.c_void_p))
         check(e)
