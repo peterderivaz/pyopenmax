@@ -5,5 +5,18 @@ This uses the OpenMAX library to decode video from inside Python with hardware a
 The Raspberry Pi does not ship with audio decode VLLs so this only decodes the video stream.
 
 USAGE
+
+EXAMPLE A (play a complete video)
+
 import pyopenmax
 pyopenmax.play("/home/pi/transformers.mp4")  # Full pathname is required
+
+
+
+EXAMPLE B (play video starting from 10 seconds in)
+
+from pyopenmax import VideoPlayer
+vp = VideoPlayer(videofile) 
+vp.seek(10)
+vp.wait()
+vp.close()
